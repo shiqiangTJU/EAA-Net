@@ -1,0 +1,309 @@
+from __future__ import absolute_import, division, print_function, unicode_literals
+import tensorflow as tf
+import numpy as np
+import os
+from tqdm import tqdm
+import SimpleITK as sitk
+from sklearn.model_selection import train_test_split
+import nibabel as nib
+import matplotlib.pyplot as plt
+from tensorflow.keras import backend as K
+import h5py
+
+def se_block(input_tensor, c=16):
+    num_channels = int(input_tensor.shape[-1])  # Tensorflow backend
+    bottleneck = int(num_channels // c)
+
+    se_branch = tf.keras.layers.GlobalAveragePooling2D()(input_tensor)
+    se_branch = tf.keras.layers.Dense(bottleneck, use_bias=False, activation=tf.keras.activations.relu)(se_branch)
+    se_branch = tf.keras.layers.Dropout(0.2)(se_branch)
+    se_branch = tf.keras.layers.Dense(num_channels, use_bias=False, activation=tf.keras.activations.sigmoid)(se_branch)
+    se_branch = tf.keras.layers.Dropout(0.2)(se_branch)
+
+    out = tf.keras.layers.Multiply()([input_tensor, se_branch])
+    return out
+   
+ini = tf.keras.Input(shape=(176, 144, 4), name="initial")
+pre = tf.keras.Input(shape=(176, 144, 4), name="pre")
+post = tf.keras.Input(shape=(176, 144, 4), name="post")
+
+########cons##########
+a2 = tf.keras.layers.concatenate([pre, post], axis=-1)
+a2 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(a2)
+a2 = tf.keras.layers.BatchNormalization()(a2)
+a2 = tf.keras.activations.relu(a2)
+a2 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(a2)
+# x = tf.keras.layers.Conv2D(filters=16, kernel_size=(1, 1), padding='same')(pre)
+# a2 = tf.keras.layers.Add()([x, a2])
+
+s2 = se_block(a2)
+
+a3 = tf.keras.layers.BatchNormalization()(s2)
+a3 = tf.keras.activations.relu(a3)
+a3 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), strides=(2, 2), padding='same')(a3)
+a3 = tf.keras.layers.BatchNormalization()(a3)
+a3 = tf.keras.activations.relu(a3)
+a3 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(a3)
+# s2 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), strides=(2,2), padding='same')(s2)
+# a3 = tf.keras.layers.Add()([a3, s2])
+
+s3 = se_block(a3)
+
+a4 = tf.keras.layers.BatchNormalization()(s3)
+a4 = tf.keras.activations.relu(a4)
+a4 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), strides=(2, 2), padding='same')(a4)
+a4 = tf.keras.layers.BatchNormalization()(a4)
+a4 = tf.keras.activations.relu(a4)
+a4 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(a4)
+# s3 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), strides=(2, 2), padding='same')(s3)
+# a4 = tf.keras.layers.Add()([a4, s3])
+
+s4 = se_block(a4)
+
+a5 = tf.keras.layers.BatchNormalization()(s4)
+a5 = tf.keras.activations.relu(a5)
+a5 = tf.keras.layers.Conv2D(filters=128, kernel_size=(3, 3), strides=(2, 2), padding='same')(a5)
+a5 = tf.keras.layers.BatchNormalization()(a5)
+a5 = tf.keras.activations.relu(a5)
+a5 = tf.keras.layers.Conv2D(filters=128, kernel_size=(3, 3), padding='same')(a5)
+
+s5 = se_block(a5)
+
+a6 = tf.keras.layers.BatchNormalization()(s5)
+a6 = tf.keras.activations.relu(a6)
+a6 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), padding='same')(a6)
+a6 = tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=(3, 3), strides=(2, 2), padding='same')(a6)
+a6 = tf.keras.layers.BatchNormalization()(a6)
+a6 = tf.keras.activations.relu(a6)
+a6 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(a6)
+
+s6 = se_block(a6)
+
+a7 = tf.keras.layers.BatchNormalization()(s6)
+a7 = tf.keras.activations.relu(a7)
+a7 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), padding='same')(a7)
+a7 = tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=(3, 3), strides=(2, 2), padding='same')(a7)
+a7 = tf.keras.layers.BatchNormalization()(a7)
+a7 = tf.keras.activations.relu(a7)
+a7 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(a7)
+
+s7 = se_block(a7)
+
+a8 = tf.keras.layers.BatchNormalization()(s7)
+a8 = tf.keras.activations.relu(a8)
+a8 = tf.keras.layers.Conv2D(filters=16, kernel_size=(1, 1), padding='same')(a8)
+a8 = tf.keras.layers.Conv2DTranspose(filters=16, kernel_size=(3, 3), strides=(2, 2), padding='same')(a8)
+a8 = tf.keras.layers.BatchNormalization()(a8)
+a8 = tf.keras.activations.relu(a8)
+a8 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(a8)
+
+s8 = se_block(a8)
+
+a9 = tf.keras.layers.BatchNormalization()(s8)
+a9 = tf.keras.activations.relu(a9)
+a9 = tf.keras.layers.Conv2D(filters=8, kernel_size=(3, 3), padding='same')(a9)
+
+recons = tf.keras.layers.Conv2D(filters=1, kernel_size=(1, 1), padding='same',
+                                activation=tf.keras.activations.sigmoid, name="recons")(a9)
+
+########seg##########
+b2 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(ini)
+b2 = tf.keras.layers.BatchNormalization()(b2)
+b2 = tf.keras.activations.relu(b2)
+b2 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(b2)
+
+m2 = se_block(b2)
+
+b3 = tf.keras.layers.BatchNormalization()(m2)
+b3 = tf.keras.activations.relu(b3)
+b3 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), strides=(2, 2), padding='same')(b3)
+b3 = tf.keras.layers.BatchNormalization()(b3)
+b3 = tf.keras.activations.relu(b3)
+b3 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(b3)
+
+m3 = se_block(b3)
+
+b4 = tf.keras.layers.BatchNormalization()(m3)
+b4 = tf.keras.activations.relu(b4)
+b4 = tf.keras.layers.Conv2D(filters=128, kernel_size=(3, 3), strides=(2, 2), padding='same')(b4)
+b4 = tf.keras.layers.BatchNormalization()(b4)
+b4 = tf.keras.activations.relu(b4)
+b4 = tf.keras.layers.Conv2D(filters=128, kernel_size=(3, 3), padding='same')(b4)
+
+m4 = se_block(b4)
+
+b5 = tf.keras.layers.BatchNormalization()(m4)
+b5 = tf.keras.activations.relu(b5)
+b5 = tf.keras.layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(2, 2), padding='same')(b5)
+b5 = tf.keras.layers.BatchNormalization()(b5)
+b5 = tf.keras.activations.relu(b5)
+b5 = tf.keras.layers.Conv2D(filters=256, kernel_size=(3, 3), padding='same')(b5)
+
+m5 = se_block(b5)
+
+upb_0 = tf.keras.layers.Conv2D(filters=128, kernel_size=(1, 1), padding='same')(m5)
+upb_0 = tf.keras.layers.Conv2DTranspose(filters=128, kernel_size=(3, 3), strides=(2, 2), padding='same')(upb_0)
+concatb_0 = tf.keras.layers.concatenate([upb_0, m4], axis=-1)
+concatb_0 = tf.keras.layers.Conv2D(filters=128, kernel_size=(1, 1), padding='same')(concatb_0)
+
+# m51 = se_block(concatb_0)
+
+b6 = tf.keras.layers.BatchNormalization()(concatb_0)
+b6 = tf.keras.activations.relu(b6)
+b6 = tf.keras.layers.Conv2D(filters=128, kernel_size=(3, 3), padding='same')(b6)
+b6 = tf.keras.layers.BatchNormalization()(b6)
+b6 = tf.keras.activations.relu(b6)
+b6 = tf.keras.layers.Conv2D(filters=128, kernel_size=(3, 3), padding='same')(b6)
+# b6 = tf.keras.layers.Add()([concatb_0, b6])
+
+m6 = se_block(b6)
+
+upb_1 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), padding='same')(m6)
+upb_1 = tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=(3, 3), strides=(2, 2), padding='same')(upb_1)
+concatb_1 = tf.keras.layers.concatenate([upb_1, m3], axis=-1)
+concatb_1 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), padding='same')(concatb_1)
+
+# m61 = se_block(concatb_1)
+
+b7 = tf.keras.layers.BatchNormalization()(concatb_1)
+b7 = tf.keras.activations.relu(b7)
+b7 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(b7)
+b7 = tf.keras.layers.BatchNormalization()(b7)
+b7 = tf.keras.activations.relu(b7)
+b7 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(b7)
+
+m7 = se_block(b7)
+
+upb_2 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), padding='same')(m7)
+upb_2 = tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=(3, 3), strides=(2, 2), padding='same')(upb_2)
+concatb_2 = tf.keras.layers.concatenate([upb_2, m2], axis=-1)
+concatb_2 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), padding='same')(concatb_2)
+
+# m71 = se_block(concatb_2)
+
+b8 = tf.keras.layers.BatchNormalization()(concatb_2)
+b8 = tf.keras.activations.relu(b8)
+b8 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(b8)
+b8 = tf.keras.layers.BatchNormalization()(b8)
+b8 = tf.keras.activations.relu(b8)
+b8 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(b8)
+
+m8 = se_block(b8)
+
+b9 = tf.keras.layers.BatchNormalization()(m8)
+b9 = tf.keras.activations.relu(b9)
+b9 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(b9)
+end_ini = tf.keras.layers.Conv2D(filters=1, kernel_size=(1, 1), padding='same',
+                                 activation=tf.keras.activations.sigmoid, name="end_ini")(b9)
+
+########seg_end##########
+mm5 = tf.keras.layers.Conv2D(filters=128, kernel_size=(1, 1), padding='same')(m5)
+c5 = tf.keras.layers.Multiply()([s5, mm5])
+c5 = tf.keras.layers.BatchNormalization()(c5)
+c5 = tf.keras.activations.relu(c5)
+c5 = tf.keras.layers.Conv2D(filters=128, kernel_size=(1, 1), padding='same')(c5)
+c5 = tf.keras.activations.sigmoid(c5)
+c51 = tf.keras.layers.Add()([mm5, c5])
+
+mm6 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), padding='same')(m6)
+c6 = tf.keras.layers.Multiply()([s6, mm6])
+c6 = tf.keras.layers.BatchNormalization()(c6)
+c6 = tf.keras.activations.relu(c6)
+c6 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), padding='same')(c6)
+c6 = tf.keras.activations.sigmoid(c6)
+c61 = tf.keras.layers.Add()([mm6, c6])
+
+mm7 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), padding='same')(m7)
+c7 = tf.keras.layers.Multiply()([s7, mm7])
+c7 = tf.keras.layers.BatchNormalization()(c7)
+c7 = tf.keras.activations.relu(c7)
+c7 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), padding='same')(c7)
+c7 = tf.keras.activations.sigmoid(c7)
+c71 = tf.keras.layers.Add()([mm7, c7])
+
+mm8 = tf.keras.layers.Conv2D(filters=16, kernel_size=(1, 1), padding='same')(m8)
+c8 = tf.keras.layers.Multiply()([s8, mm8])
+c8 = tf.keras.layers.BatchNormalization()(c8)
+c8 = tf.keras.activations.relu(c8)
+c8 = tf.keras.layers.Conv2D(filters=16, kernel_size=(1, 1), padding='same')(c8)
+c8 = tf.keras.activations.sigmoid(c8)
+c81 = tf.keras.layers.Add()([mm8, c8])
+
+upc_0 = tf.keras.layers.Conv2D(filters=64, kernel_size=(1, 1), padding='same')(c51)
+upc_0 = tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=(3, 3), strides=(2, 2), padding='same')(upc_0)
+addc_0 = tf.keras.layers.Add()([upc_0, c61])
+addc_0 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(addc_0)
+
+e0 = se_block(addc_0)
+
+c52 = tf.keras.layers.BatchNormalization()(e0)
+c52 = tf.keras.activations.relu(c52)
+c52 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(c52)
+c52 = tf.keras.layers.BatchNormalization()(c52)
+c52 = tf.keras.activations.relu(c52)
+c52 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), padding='same')(c52)
+
+upc_1 = tf.keras.layers.Conv2D(filters=32, kernel_size=(1, 1), padding='same')(c52)
+upc_1 = tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=(3, 3), strides=(2, 2), padding='same')(upc_1)
+addc_1 = tf.keras.layers.Add()([upc_1, c71])
+addc_1 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(addc_1)
+
+e1 = se_block(addc_1)
+
+c62 = tf.keras.layers.BatchNormalization()(e1)
+c62 = tf.keras.activations.relu(c62)
+c62 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(c62)
+c62 = tf.keras.layers.BatchNormalization()(c62)
+c62 = tf.keras.activations.relu(c62)
+c62 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3, 3), padding='same')(c62)
+
+upc_2 = tf.keras.layers.Conv2D(filters=16, kernel_size=(1, 1), padding='same')(c62)
+upc_2 = tf.keras.layers.Conv2DTranspose(filters=16, kernel_size=(3, 3), strides=(2, 2), padding='same')(upc_2)
+addc_2 = tf.keras.layers.Add()([upc_2, c81])
+addc_2 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(addc_2)
+
+e2 = se_block(addc_2)
+
+c72 = tf.keras.layers.BatchNormalization()(e2)
+c72 = tf.keras.activations.relu(c72)
+c72 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(c72)
+c72 = tf.keras.layers.BatchNormalization()(c72)
+c72 = tf.keras.activations.relu(c72)
+c72 = tf.keras.layers.Conv2D(filters=16, kernel_size=(3, 3), padding='same')(c72)
+
+end = tf.keras.layers.Conv2D(filters=1, kernel_size=(1, 1), padding='same',
+                             activation=tf.keras.activations.sigmoid, name="end")(c72)
+
+def dice_coef(y_true, y_pred):
+    y_true_f = K.flatten(y_true)
+    y_pred_f = K.flatten(y_pred)
+    intersection = K.sum(y_true_f * y_pred_f)
+    coef = (2. * intersection + K.epsilon()) / (K.sum(y_true_f) + K.sum(y_pred_f) + K.epsilon())
+    return coef
+
+def loss(y_true, y_pred, cross_weights=0.4):
+    def dice_coef_loss(y_true, y_pred):
+        return 1 - dice_coef(y_true, y_pred)
+
+    return tf.keras.losses.binary_crossentropy(y_true, y_pred) * cross_weights + dice_coef_loss(y_true, y_pred)
+
+
+def recons_loss(y_true, y_pred):
+
+    return tf.keras.losses.mae(y_true, y_pred) + tf.keras.losses.mse(y_true, y_pred)
+
+
+dsmodel = tf.keras.Model(inputs=[ini, pre, post],
+                         outputs=[recons, end_ini, end])
+dsmodel.summary()
+dsmodel.compile(loss={'recons': recons_loss,
+                      'end_ini': loss,
+                      'end': loss},
+                optimizer=tf.keras.optimizers.Adam(),
+                metrics={'recons': 'mae',
+                         'end_ini': dice_coef,
+                         'end': dice_coef},
+                loss_weights={'recons': 1,
+                              'end_ini': 1,
+                              'end': 1}
+                )
